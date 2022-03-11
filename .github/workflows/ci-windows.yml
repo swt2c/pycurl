@@ -38,7 +38,10 @@ jobs:
         -username "pycurl"
         -password "${{ secrets.GITHUB_TOKEN }}"
     - name: Install packages
-      run: vcpkg install curl[core,http2,non-http,openssl,ssh]:x86-windows
+      run: vcpkg install curl[core,http2,non-http,openssl,ssh]:x86-windows --debug
+    - name: Debug dump logs
+      if: ${{ failure() }}
+      run: type C:\vcpkg\buildtrees\curl\config-x86-windows-out.log
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
