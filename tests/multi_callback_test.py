@@ -24,7 +24,10 @@ class MultiCallbackTest(unittest.TestCase):
         self.socket_result = None
         self.timer_result = None
         self.handle_added = False
-        self.loop = asyncio.new_event_loop()
+        if sys.platform == 'win32':
+            self.loop = asyncio.WindowsSelectorEventLoopPolicy().new_event_loop()
+        else:
+            self.loop = asyncio.new_event_loop()
         self.timer_handle = None
 
     def tearDown(self):
