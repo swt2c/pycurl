@@ -3,6 +3,7 @@
 # vi:ts=4:et
 
 from . import localhost
+import asyncio
 import pycurl
 import pytest
 import sys
@@ -22,37 +23,91 @@ class MultiCallbackTest(unittest.TestCase):
         self.multi.setopt(pycurl.M_TIMERFUNCTION, self.timer_callback)
         self.socket_result = None
         self.timer_result = None
-        self.sockets = {}
         self.handle_added = False
+        self.loop = asyncio.new_event_loop()
+        self.timer_handle = None
 
     def tearDown(self):
+        if self.timer_handle:
+            self.timer_handle.cancel()
+            self.timer_handle = None
+        if self.loop.is_running:
+            self.loop.stop()
+        if not self.loop.is_closed():
+            self.loop.close()
         if self.handle_added:
             self.multi.remove_handle(self.easy)
         self.multi.close()
         self.easy.close()
 
     def socket_callback(self, ev_bitmask, sock_fd, multi, data):
+        print("BLAH socket_cb", ev_bitmask, sock_fd)
         self.socket_result = (sock_fd, ev_bitmask)
         if ev_bitmask & pycurl.POLL_REMOVE:
-            self.sockets.pop(sock_fd)
+            self.loop.remove_reader(sock_fd)
+            self.loop.remove_writer(sock_fd)
         else:
-            self.sockets[sock_fd] = ev_bitmask | self.sockets.get(sock_fd, 0)
+            if ev_bitmask & pycurl.POLL_IN:
+                print("BLAH ADDING READER")
+                self.loop.add_reader(
+                    sock_fd,
+                    self.socket_ready_callback,
+                    sock_fd,
+                    pycurl.CSELECT_IN,
+                )
+            if ev_bitmask & pycurl.POLL_OUT:
+                print("BLAH ADDING WRITER")
+                self.loop.add_writer(
+                    sock_fd,
+                    self.socket_ready_callback,
+                    sock_fd,
+                    pycurl.CSELECT_OUT,
+                )
+
+    def socket_ready_callback(self, sock_fd, ev_bitmask):
+        #print("BLAH socket ready", sock_fd, ev_bitmask)
+        self.multi.socket_action(sock_fd, ev_bitmask)
 
     def timer_callback(self, timeout_ms):
+        print("BLAH timer_cb", timeout_ms)
         self.timer_result = timeout_ms
+        if self.timer_handle:
+            self.timer_handle.cancel()
+            self.timer_handle = None
+        if timeout_ms < 0:
+            return
+        if timeout_ms == 0:
+            timeout_ms = 1
+        self.timer_handle = self.loop.call_later(
+            timeout_ms / 1000,
+            self.timer_expired_callback,
+        )
+
+    def timer_expired_callback(self):
+        print("BLAH timer_callback_expired!!!")
+        self.timer_handle = None
+        self.multi.socket_action(pycurl.SOCKET_TIMEOUT, 0)
 
     def partial_transfer(self):
-        perform = True
         def write_callback(data):
-            nonlocal perform
-            perform = False
+            print("BLAH write_callback")
+            self.loop.stop()
         self.easy.setopt(pycurl.WRITEFUNCTION, write_callback)
         self.multi.add_handle(self.easy)
         self.handle_added = True
+        print("BLAH1")
         self.multi.socket_action(pycurl.SOCKET_TIMEOUT, 0)
-        while self.sockets and perform:
-            for socket, action in tuple(self.sockets.items()):
-                self.multi.socket_action(socket, action)
+        print("BLAH2")
+        # Escape valve that will end the loop if nothing happens for 60s
+        def stop_loop():
+            self.loop.stop()
+            raise Exception('Test timed out after 60 seconds')
+        self.loop.call_later(60, stop_loop)
+        self.loop.run_forever()
+        print("BLAH3")
+        #while self.sockets and perform:
+            #for socket, action in tuple(self.sockets.items()):
+            #    self.multi.socket_action(socket, action)
 
     # multi.socket_action must call both SOCKETFUNCTION and TIMERFUNCTION at
     # various points during the transfer (at least at the start and end)
