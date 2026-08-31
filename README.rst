@@ -1,5 +1,6 @@
 PycURL -- A Python Interface To The cURL library
 ================================================
+BLAH BLAH BLAH
 
 .. image:: https://img.shields.io/pypi/v/pycurl.svg
    :target: https://pypi.org/project/pycurl/
