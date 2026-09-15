@@ -27,15 +27,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        curl-version: ["ubuntu"]
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14", "3.14t", "3.15"]
+        # TEMP(pycurl#1066): trimmed to just the one vcpkg/manylinux job we need
+        # for the OPENSSLDIR repro. Revert this whole TEMP block before merging.
+        curl-version: ["vcpkg"]
+        python-version: ["3.12"]
         include:
           - curl-version: "vcpkg"
             python-version: "3.12"
             cibw-build: "cp312-manylinux_x86_64"
-          - curl-version: "vcpkg"
-            python-version: "3.14t"
-            cibw-build: "cp314t-manylinux_x86_64"
     permissions:
       packages: write
 
@@ -86,6 +85,35 @@ jobs:
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         CIBW_ENVIRONMENT_PASS_LINUX: GITHUB_TOKEN GITHUB_REPOSITORY_OWNER VCPKG_BINARY_SOURCES
+        # TEMP(pycurl#1066): plant a hostile openssl.cnf at the confirmed real
+        # OPENSSLDIR (/etc/ssl, per DEFAULT_CERT_DIR diagnostic). Per OpenSSL's
+        # own docs (doc/man5/config.pod, "SSL Configuration"), a [system_default]
+        # ssl_conf section IS applied to every SSL_CTX_new() in vanilla upstream
+        # OpenSSL -- but *without* `config_diagnostics = 1` in the default
+        # section, a config error there is silently ignored rather than fatal
+        # (this is why our two prior attempts, missing that line, had zero
+        # effect). With it set, an unresolvable Groups value should reproduce
+        # the exact "could not create a context" failure from the issue.
+        # Revert this whole TEMP block before merging.
+        CIBW_BEFORE_TEST_LINUX: >-
+          pip install flake8 -r requirements-dev.txt &&
+          make -C {package}/tests/fake-curl/libcurl &&
+          mkdir -p /etc/ssl &&
+          printf 'openssl_conf = openssl_init\nconfig_diagnostics = 1\n[openssl_init]\nssl_conf = ssl_configuration\n[ssl_configuration]\nsystem_default = tls_system_default\n[tls_system_default]\nGroups = ThisGroupDoesNotExist\n' > /etc/ssl/openssl.cnf
+        CIBW_TEST_COMMAND: >-
+          python -c "import ctypes, glob, os, pycurl;
+          pkgdir = os.path.dirname(pycurl.__file__);
+          ext = glob.glob(os.path.join(pkgdir, '_pycurl*.so'))[0];
+          lib = ctypes.CDLL(ext);
+          lib.X509_get_default_cert_dir.restype = ctypes.c_char_p;
+          lib.X509_get_default_cert_file.restype = ctypes.c_char_p;
+          print('LINKED', pycurl.version);
+          print('OPENSSL_CONF_ENV', repr(os.environ.get('OPENSSL_CONF')));
+          print('DEFAULT_CERT_DIR', lib.X509_get_default_cert_dir());
+          print('DEFAULT_CERT_FILE', lib.X509_get_default_cert_file());
+          import io; b = io.BytesIO(); c = pycurl.Curl();
+          c.setopt(c.URL, 'https://example.com'); c.setopt(c.WRITEDATA, b);
+          c.perform(); print('PYCURL_SSL_OK', c.getinfo(c.RESPONSE_CODE))"
       run: |
         pip install cibuildwheel
         cibuildwheel --only ${{ matrix.cibw-build }}
